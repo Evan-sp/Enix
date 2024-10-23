@@ -1,8 +1,9 @@
 use std::io::{self, Write};
-use std::fs;
-use std::path::Path;
-use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::env;
+//use std::fs;
+//use std::os::unix::fs::PermissionsExt;
 
 fn main() {
     loop {
@@ -32,11 +33,23 @@ fn parse(input: &str) {
         Some(word) => word,
         None => "No words found",
     };
-    launch(first_word);
+    launch(first_word, &words[1..]);
 }
 
-fn launch(command: &str) {
-    let path = Path::new(command);
+fn launch(command: &str, arguments: &[&str]) {
+    if builtin(command, arguments) {
+        return;
+    }
+
+    let mut path = PathBuf::from(command);
+    if let Ok(path_var) = env::var("PATH") {
+        for split_path in env::split_paths(&path_var) {
+            let full_path = split_path.join(command);
+            if full_path.exists() {
+                path = full_path;
+            }
+        }
+    }
     if !path.exists() {
         println!("File {} does not exist", command);
         return;
@@ -46,6 +59,7 @@ fn launch(command: &str) {
         return;
     }
     
+    /*
     let metadata = fs::metadata(path).unwrap();
     let permissions = metadata.permissions();
     let mode = permissions.mode();
@@ -57,17 +71,31 @@ fn launch(command: &str) {
     println!("  Read permission: {}", user_read);
     println!("  Write permission: {}", user_write);
     println!("  Execute permission: {}", user_exec);
+    */
     
-    let output = Command::new(path)
-        .output()
-        .expect("Failed to execute the command");
+    let mut child = Command::new(path)
+        .args(arguments)
+        .spawn()
+        .expect("Failed to execute command");
+    child.wait().expect("Failed to wait on child");
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("{}", stdout.trim());
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Error output:\n {}", stderr);
+}
+
+fn builtin(command: &str, arguments: &[&str]) -> bool {
+    match command {
+        "cd" => { 
+            println!("Match for cd builtin");
+            if let Some(arg) = arguments.get(0) {
+                let new_dir = Path::new(arg);
+                if !env::set_current_dir(&new_dir).is_ok() {
+                    println!("Failed to change directory");
+                }
+            } else {
+                println!("No arguments to cd");
+            }
+            return true
+        }
+        _ => false,
     }
 }
 
