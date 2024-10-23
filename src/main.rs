@@ -2,12 +2,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::env;
-//use std::fs;
-//use std::os::unix::fs::PermissionsExt;
 
 fn main() {
     loop {
-        print!("? ");
+        let path = env::current_dir().expect("Error getting current directory");
+        print!("{}? ", path.display());
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
@@ -58,21 +57,7 @@ fn launch(command: &str, arguments: &[&str]) {
         println!("'{}' is not a file", command);
         return;
     }
-    
-    /*
-    let metadata = fs::metadata(path).unwrap();
-    let permissions = metadata.permissions();
-    let mode = permissions.mode();
-    let user_read = mode & 0o400 != 0;
-    let user_write = mode & 0o200 != 0;
-    let user_exec = mode & 0o100 != 0;
-
-    println!("File '{}':", command);
-    println!("  Read permission: {}", user_read);
-    println!("  Write permission: {}", user_write);
-    println!("  Execute permission: {}", user_exec);
-    */
-    
+   
     let mut child = Command::new(path)
         .args(arguments)
         .spawn()
