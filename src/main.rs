@@ -1,37 +1,70 @@
+extern crate termion;
+
+use std::env;
+use std::process;
 use std::io::{self, Write};
+use termion::raw::IntoRawMode;
+use termion::event::Key;
+use termion::input::TermRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::env;
 
 fn main() {
-    loop {
-        let path = env::current_dir().expect("Error getting current directory");
-        print!("{}? ", path.display());
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(_) => {
-                let input = input.trim();
-                if input == "exit" || input == "quit" {
-                    println!("Goodbye");
-                    break;
-                }
-                parse(input);
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().into_raw_mode().unwrap();
+    
+    let mut input_line = String::new();
+    print!("\r");
+    print!("? ");
+    stdout.flush().unwrap();
+    
+    for key_result in stdin.keys() {
+        let key = key_result.unwrap(); 
+        match key {
+            Key::Char('\n') => {
+                parse(&input_line);
+                print!("? ");
+                stdout.flush().unwrap();
+                input_line.clear();
             }
-            Err(error) => {
-                println!("Error reading input: {}", error);
+            Key::Char(key) => {
+                input_line.push(key);
+                print!("{}", key);
+                stdout.flush().unwrap();
+            }
+            Key::Backspace => {
+                if !input_line.is_empty() {
+                    input_line.pop();
+                    print!("\x08 \x08");
+                    stdout.flush().unwrap();
+                }
+            }
+            Key::Ctrl('c') => {
+                print!("\r\n");
+                print!("? ");
+                stdout.flush().unwrap();
+                input_line.clear();
+            }
+            _ => {
             }
         }
     }
 }
 
-fn parse(input: &str) {
-    let words: Vec<&str> = input.split_whitespace().collect();
+fn parse(line: &str) {
+    let line = line.trim();
+    if line.len() == 0 {
+        print!("\r\n");
+        return;
+    }
+    if line == "q" || line == "exit" || line == "quit" {
+        process::exit(0);
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
     let first_word = match words.get(0) {
         Some(word) => word,
         None => "No words found",
-    };
+    }; 
     launch(first_word, &words[1..]);
 }
 
@@ -50,35 +83,39 @@ fn launch(command: &str, arguments: &[&str]) {
         }
     }
     if !path.exists() {
-        println!("File {} does not exist", command);
+        print!("\r\n");
+        print!("File {} does not exist", command);
+        print!("\r\n");
         return;
     }
     if !path.is_file() {
-        println!("'{}' is not a file", command);
+        print!("\r\n");
+        print!("'{}' is not a file", command);
+        print!("\r\n");
         return;
     }
-   
+
+    print!("\r\n");
     let mut child = Command::new(path)
         .args(arguments)
         .spawn()
         .expect("Failed to execute command");
     child.wait().expect("Failed to wait on child");
-
+    print!("\r");
 }
 
 fn builtin(command: &str, arguments: &[&str]) -> bool {
     match command {
-        "cd" => { 
-            println!("Match for cd builtin");
+        "cd" => {
             if let Some(arg) = arguments.get(0) {
                 let new_dir = Path::new(arg);
                 if !env::set_current_dir(&new_dir).is_ok() {
                     println!("Failed to change directory");
                 }
             } else {
-                println!("No arguments to cd");
+                print!("\r\nNo arguments to cd");
             }
-            return true
+            return true;
         }
         _ => false,
     }
