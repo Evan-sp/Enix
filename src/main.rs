@@ -11,39 +11,46 @@ use std::process::Command;
 
 fn main() {
     let stdin = io::stdin();
-    let mut stdout = io::stdout().into_raw_mode().unwrap();
+    let mut stdout = Some(io::stdout().into_raw_mode().unwrap());
     
     let mut input_line = String::new();
     print!("\r");
     print!("? ");
-    stdout.flush().unwrap();
+    stdout.as_mut().unwrap().flush().unwrap();
     
     for key_result in stdin.keys() {
         let key = key_result.unwrap(); 
         match key {
             Key::Char('\n') => {
+                drop(stdout.take());
                 parse(&input_line);
+                stdout = Some(io::stdout().into_raw_mode().unwrap());
                 print!("? ");
-                stdout.flush().unwrap();
+                stdout.as_mut().unwrap().flush().unwrap();
                 input_line.clear();
             }
             Key::Char(key) => {
                 input_line.push(key);
                 print!("{}", key);
-                stdout.flush().unwrap();
+                stdout.as_mut().unwrap().flush().unwrap();
             }
             Key::Backspace => {
                 if !input_line.is_empty() {
                     input_line.pop();
                     print!("\x08 \x08");
-                    stdout.flush().unwrap();
+                    stdout.as_mut().unwrap().flush().unwrap();
                 }
             }
             Key::Ctrl('c') => {
                 print!("\r\n");
                 print!("? ");
-                stdout.flush().unwrap();
+                stdout.as_mut().unwrap().flush().unwrap();
                 input_line.clear();
+            }
+            Key::Ctrl('l') => {
+                print!("\x1B[2J\x1B[H");
+                print!("? ");
+                stdout.as_mut().unwrap().flush().unwrap();
             }
             _ => {
             }
@@ -101,7 +108,10 @@ fn launch(command: &str, arguments: &[&str]) {
         .spawn()
         .expect("Failed to execute command");
     child.wait().expect("Failed to wait on child");
-    print!("\r");
+    //let stdout = String::from_utf8_lossy(&child.stdout);
+    //if !stdout.ends_with('\n') {
+    //    print!("\n");
+    //}
 }
 
 fn builtin(command: &str, arguments: &[&str]) -> bool {
@@ -110,10 +120,14 @@ fn builtin(command: &str, arguments: &[&str]) -> bool {
             if let Some(arg) = arguments.get(0) {
                 let new_dir = Path::new(arg);
                 if !env::set_current_dir(&new_dir).is_ok() {
-                    println!("Failed to change directory");
+                    print!("\n\r");
+                    print!("Failed to change directory");
                 }
+                print!("\n\r");
             } else {
-                print!("\r\nNo arguments to cd");
+                print!("\n\r");
+                print!("No arguments to cd");
+                print!("\n\r");
             }
             return true;
         }
