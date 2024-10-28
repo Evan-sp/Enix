@@ -1,59 +1,54 @@
-extern crate termion;
-
-use std::env;
-use std::process;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use termion::raw::IntoRawMode;
 use termion::event::Key;
 use termion::input::TermRead;
+use std::process;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::env;
+use std::thread;
 
 fn main() {
-    let stdin = io::stdin();
-    let mut stdout = Some(io::stdout().into_raw_mode().unwrap());
-    
-    let mut input_line = String::new();
+    //set raw mode for tty
+    let _stdout = Some(io::stdout().into_raw_mode().unwrap());
+
     print!("\r");
     print!("? ");
-    stdout.as_mut().unwrap().flush().unwrap();
-    
-    for key_result in stdin.keys() {
-        let key = key_result.unwrap(); 
+    io::stdout().flush().unwrap();
+
+    let mut input_line = String::new();
+    for key_result in io::stdin().keys() {
+        let key = key_result.unwrap();
         match key {
             Key::Char('\n') => {
-                drop(stdout.take());
                 parse(&input_line);
-                stdout = Some(io::stdout().into_raw_mode().unwrap());
                 print!("? ");
-                stdout.as_mut().unwrap().flush().unwrap();
+                io::stdout().flush().unwrap();
                 input_line.clear();
             }
             Key::Char(key) => {
                 input_line.push(key);
                 print!("{}", key);
-                stdout.as_mut().unwrap().flush().unwrap();
+                io::stdout().flush().unwrap();
             }
             Key::Backspace => {
                 if !input_line.is_empty() {
                     input_line.pop();
                     print!("\x08 \x08");
-                    stdout.as_mut().unwrap().flush().unwrap();
+                    io::stdout().flush().unwrap();
                 }
             }
             Key::Ctrl('c') => {
                 print!("\r\n");
                 print!("? ");
-                stdout.as_mut().unwrap().flush().unwrap();
+                io::stdout().flush().unwrap();
                 input_line.clear();
             }
             Key::Ctrl('l') => {
                 print!("\x1B[2J\x1B[H");
                 print!("? ");
-                stdout.as_mut().unwrap().flush().unwrap();
+                io::stdout().flush().unwrap();
             }
-            _ => {
-            }
+            _ => {}
         }
     }
 }
@@ -67,11 +62,13 @@ fn parse(line: &str) {
     if line == "q" || line == "exit" || line == "quit" {
         process::exit(0);
     }
+
     let words: Vec<&str> = line.split_whitespace().collect();
     let first_word = match words.get(0) {
         Some(word) => word,
         None => "No words found",
-    }; 
+    };
+
     launch(first_word, &words[1..]);
 }
 
@@ -102,16 +99,9 @@ fn launch(command: &str, arguments: &[&str]) {
         return;
     }
 
+    spawn_with_tty();
+
     print!("\r\n");
-    let mut child = Command::new(path)
-        .args(arguments)
-        .spawn()
-        .expect("Failed to execute command");
-    child.wait().expect("Failed to wait on child");
-    //let stdout = String::from_utf8_lossy(&child.stdout);
-    //if !stdout.ends_with('\n') {
-    //    print!("\n");
-    //}
 }
 
 fn builtin(command: &str, arguments: &[&str]) -> bool {
@@ -135,3 +125,53 @@ fn builtin(command: &str, arguments: &[&str]) -> bool {
     }
 }
 
+fn spawn_with_tty() {
+    let (current_cols, current_rows) = termion::terminal_size().unwrap();
+    let pty_system = portable_pty::native_pty_system();
+    let pty_size: portable_pty::PtySize = portable_pty::PtySize {
+        rows: current_rows,
+        cols: current_cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+
+    let pair = pty_system.openpty(pty_size).unwrap();
+    let mut cmd = portable_pty::CommandBuilder::new("sleep");
+    cmd.arg("5");
+
+    let mut child = pair.slave.spawn_command(cmd).unwrap();
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .expect("Failed to clone PTY reader");
+
+    let read_handle = thread::spawn(move || {
+        let mut buf = [0; 1024];
+        while let Ok(size) = reader.read(&mut buf) {
+            if size == 0 {
+                break;
+            }
+            
+            io::stdout().write_all(&buf[..size]).unwrap();
+            io::stdout().flush().unwrap();
+        }
+    });
+
+    let write_handle = thread::spawn(move || {
+        let mut master_for_writing = pair.master.take_writer().unwrap();
+        let mut buf = [0; 1024];
+        while let Ok(size) = io::stdin().read(&mut buf) {
+            if size == 0 {
+                break;
+            }
+
+            io::stdout().flush().unwrap();
+            master_for_writing.write_all(&buf[..size]).unwrap();
+            master_for_writing.flush().unwrap();
+        }
+    });
+
+    child.wait().unwrap();
+    read_handle.join().unwrap();
+    write_handle.join().unwrap();
+}
