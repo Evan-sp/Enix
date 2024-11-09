@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+libc = "0.2.161"
+nix = { version = "0.29.0", features = ["fs"] }
+portable-pty = "0.8.1"
+signal-hook = "0.3.17"
 termion = "1.5"
