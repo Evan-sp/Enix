@@ -29,9 +29,13 @@ fn parse(input: &str) {
 }
 
 fn launch(_command: &str) {
+    // Raw mode
+    let _raw = std::io::stdout().into_raw_mode().unwrap();
+
+    // Non-blocking stdin
     let stdin_fd = io::stdin().as_raw_fd();
     fcntl(stdin_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
-    
+
     let (current_cols, current_rows) = termion::terminal_size().unwrap();
     let pty_system = portable_pty::native_pty_system();
     let pty_size: portable_pty::PtySize = portable_pty::PtySize {
@@ -41,31 +45,50 @@ fn launch(_command: &str) {
         pixel_height: 0,
     };
     let pair = pty_system.openpty(pty_size).unwrap();
-    let cmd = portable_pty::CommandBuilder::new("top");
+    let cmd = portable_pty::CommandBuilder::new("ls");
     //cmd.arg("name");
     let child = pair.slave.spawn_command(cmd).unwrap();
-    //let child_pid = i32::try_from(child.process_id().unwrap()).unwrap();
+
     let child = Arc::new(Mutex::new(child));
-    let child_clone = child.clone();
 
-    // Raw mode
-    let _raw = std::io::stdout().into_raw_mode().unwrap();
-
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .expect("Failed to clone PTY reader");
+    let mut reader = pair.master.try_clone_reader().unwrap();
     let read_handle = thread::spawn(move || {
         let mut buf = [0; 1024];
         while let Ok(size) = reader.read(&mut buf) {
             if size == 0 {
                 break;
             }
-            io::stdout().write_all(&buf[..size]).unwrap();
-            io::stdout().flush().unwrap();
+            let mut written = 0;
+            while written < size {
+                match io::stdout().write(&buf[written..size]) {
+                    Ok(n) => {
+                        written += n;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(e) => panic!("Failed to write to stdout: {}", e),
+                }
+            }
+            
+            // Try flushing until successful
+            loop {
+                match io::stdout().flush() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(e) => panic!("Failed to flush stdout: {}", e),
+                }
+            }
+            //io::stdout().write_all(&buf[..size]).unwrap();
+            //io::stdout().flush().unwrap();
         }
     });
 
+    let child_clone = child.clone();
     let write_handle = thread::spawn(move || {
         //let mut child_borrow = child_rx.recv().unwrap();
         let mut master_for_writing = pair.master.take_writer().unwrap();
@@ -78,14 +101,16 @@ fn launch(_command: &str) {
                     }
                     master_for_writing.flush().unwrap();
                 }
+                //_ => {}
                 _ => thread::sleep(Duration::from_millis(10)),
             }
         }
     });
-    //println!("start");
+
     write_handle.join().unwrap();
     read_handle.join().unwrap();
     child.lock().unwrap().wait().unwrap();
-    //println!("end");
+
+    // Clear non-blocking stdin
     fcntl(stdin_fd, FcntlArg::F_SETFL(OFlag::empty())).unwrap();
 }
