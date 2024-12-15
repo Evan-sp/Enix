@@ -1,6 +1,4 @@
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
-use nix::NixPath;
-use std::{fs, os, path};
 use std::io::stdin;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
@@ -12,6 +10,8 @@ use std::{
     thread,
     time::Duration,
 };
+use std::fs;
+use termion::cursor::DetectCursorPos;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::IntoRawMode;
@@ -26,7 +26,8 @@ fn main() {
         let key = key.unwrap();
         match key {
             Key::Char('\t') => {
-                autocomplete(&mut input);
+                input = parse_segments(&input);
+                //autocomplete(&mut input);
                 print!("\x1b[2K\r");
                 print!("? {}", input);
                 io::stdout().flush().unwrap();
@@ -71,66 +72,105 @@ fn main() {
     }
 }
 
-fn autocomplete(input: &mut String) {
-    //let last_input = input.trim().split(" ").last().unwrap();
+fn parse_segments(input: &String) -> String {
+    let (x, y) = io::stdout().cursor_pos().unwrap();
+    //println!("\r\nCursor at x: {}, y: {}", x, y);
+    if !input.is_empty() {
+        let space_i = match input[..(x as usize - 3)].rfind(' ') {
+            Some(i) => i + 1,
+            None => 0
+        };
+        let seg = &input[space_i..(x as usize - 3)];
+        let autocompleted = autocomplete(&seg.to_string());
+        let mut input_owned = input.clone();
+        input_owned.replace_range(space_i..space_i + seg.len(), &autocompleted);
+        return input_owned;
+    } else {
+        return autocomplete(&input);
+    }
+}
 
-    let mut file_names: Vec<PathBuf> = fs::read_dir(".")
+fn autocomplete(input: &String) -> String {
+    //println!("\r\nSeg: {}", input);
+    //let last_input = input.trim().split(" ").last().unwrap();
+    let mut file_names: Vec<String> = fs::read_dir(".")
         .unwrap()
         .filter_map(|dir| dir.ok())
         .map(|entry| {
-            entry.path().strip_prefix("./").unwrap().to_path_buf()
+            entry
+                .path()
+                .strip_prefix("./")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
         })
         .filter(|file_name| {
-            file_name.to_str().unwrap().starts_with(input.trim())
+            file_name
+                .to_lowercase()
+                .starts_with(input.to_lowercase().trim())
         })
         .collect();
 
+    if input.is_empty() {
+        list_files(file_names);
+        return input.to_owned();
+    }
+
     if file_names.is_empty() {
-        return;
+        return input.to_owned();
     }
 
     file_names.sort_by_key(|path| {
         return path.len();
     });
-/* 
+
+    /* 
     println!("\r");
     for f in file_names.to_owned() {
-        println!("{}", f.to_str().unwrap());
+        println!("{}", f);
         print!("\r");
-    }
-*/
-    let first = &file_names[0]
-        .to_str().unwrap();//[1..];
+    }*/
+
+    let first = &file_names[0];
     let mut prefix_len = first.len();
 
     for s in file_names.iter().skip(1) {
         prefix_len = first
             .chars()
-            .zip(s.to_str().unwrap().chars())
-            .take_while(|(a, b)| a == b)
+            .zip(s.chars())
+            .take_while(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
             .count()
             .min(prefix_len)
     }
-    // println!("common: {}\r", first.to_str().unwrap()[..prefix_len].to_string());
-     
-    *input = first[..prefix_len].to_string();
-    if prefix_len == first.len() {
+
+    // println!("{}, {}", input.len(), prefix_len);
+    // println!("common: {}\r", first[..prefix_len].to_string());
+    if prefix_len == input.len() {
         list_files(file_names);
         //print!("? {}", &input);
         //io::stdout().flush().unwrap();
+    } else {
+        // println!("\n\rcommon: {}", first[..prefix_len].to_string());
+        //*input = first[..prefix_len].to_string();
+        return first[..prefix_len].to_string();
     }
 
-    print!("{}", input);
-    io::stdout().flush().unwrap();
+    return input.to_owned();
+    // println!("\rinput: {}", input);
+    // io::stdout().flush().unwrap();
     //list_files(file_names);
 }
 
-fn list_files(file_names: Vec<PathBuf>) {
+fn list_files(file_names: Vec<String>) {
     print!("\r\n");
     io::stdout().flush().unwrap();
     // Get size in characters of longest file name
-    let mut longest_file_name_size = file_names.iter()
-        .map(|name| name.to_str().unwrap().chars().count()).max().unwrap_or(0);
+    let mut longest_file_name_size = file_names
+        .iter()
+        .map(|name| name.chars().count())
+        .max()
+        .unwrap_or(0);
 
     // Add padding
     longest_file_name_size += 5;
@@ -148,22 +188,27 @@ fn list_files(file_names: Vec<PathBuf>) {
 
     // Get width of formatted output
     let _w = (longest_file_name_size + 1) * 2;
-     
+
     //print!("\n\r");
     let mut printed_cols = 0;
     let mut printed_cols_newline_count = 0;
     if format_cols <= 1 {
         for file_name in &file_names {
-            print!("{}\r\n", file_name.to_str().unwrap());
+            print!("{}\r\n", file_name);
         }
     } else {
         for file_name in &file_names {
-            print!("{}", file_name.to_str().unwrap());
-            print!("{}", " ".repeat((longest_file_name_size) - file_name.to_str().unwrap().chars().count()));
+            print!("{}", file_name);
+            print!(
+                "{}",
+                " ".repeat((longest_file_name_size) - file_name.chars().count())
+            );
 
             printed_cols += 1;
-            printed_cols_newline_count += 1; 
-            if ((printed_cols_newline_count + 1) > format_cols) || (printed_cols == file_names.len()) {
+            printed_cols_newline_count += 1;
+            if ((printed_cols_newline_count + 1) > format_cols)
+                || (printed_cols == file_names.len())
+            {
                 printed_cols_newline_count = 0;
                 print!("\n\r");
             }
@@ -171,8 +216,6 @@ fn list_files(file_names: Vec<PathBuf>) {
     }
     //print!("\r\n{}", input);
     //io::stdout().flush().unwrap();
-
-    
 }
 
 fn parse(input: &str) -> bool {
