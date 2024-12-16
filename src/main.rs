@@ -260,6 +260,11 @@ fn launch(command: &str, args: &str) {
         return;
     }
 
+    if metadata.is_dir() {
+        println!("Directory is not executable");
+        return;
+    }
+
     /*if !path.is_file() {
         println!("'{}' is not a file", command);
         return;
