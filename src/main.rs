@@ -1,4 +1,5 @@
 use nix::fcntl::{fcntl, FcntlArg, OFlag};
+use std::fs;
 use std::io::stdin;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
@@ -10,7 +11,6 @@ use std::{
     thread,
     time::Duration,
 };
-use std::fs;
 use termion::cursor::DetectCursorPos;
 use termion::event::Key;
 use termion::input::TermRead;
@@ -27,7 +27,6 @@ fn main() {
         match key {
             Key::Char('\t') => {
                 input = parse_segments(&input);
-                //autocomplete(&mut input);
                 print!("\x1b[2K\r");
                 print!("? {}", input);
                 io::stdout().flush().unwrap();
@@ -36,8 +35,6 @@ fn main() {
                 print!("\r\n");
                 io::stdout().flush().unwrap();
                 if !input.is_empty() && !parse(&input) {
-                    //drop(_raw);
-                    //std::process::exit(0);
                     return;
                 }
                 print!("\r");
@@ -73,12 +70,13 @@ fn main() {
 }
 
 fn parse_segments(input: &String) -> String {
-    let (x, y) = io::stdout().cursor_pos().unwrap();
-    //println!("\r\nCursor at x: {}, y: {}", x, y);
+    let (x, _y) = io::stdout().cursor_pos().unwrap();
     if !input.is_empty() {
         let space_i = match input[..(x as usize - 3)].rfind(' ') {
             Some(i) => i + 1,
-            None => 0
+            None => {
+                return command_autocomplete(&input);
+            }
         };
         let seg = &input[space_i..(x as usize - 3)];
         let autocompleted = autocomplete(&seg.to_string());
@@ -90,118 +88,128 @@ fn parse_segments(input: &String) -> String {
     }
 }
 
+fn command_autocomplete(input: &String) -> String {
+    let mut commands = Vec::new();
+    if let Ok(path_var) = env::var("PATH") {
+        for split_path in env::split_paths(&path_var) {
+            if let Ok(entries) = fs::read_dir(split_path) {
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        if entry.file_name().to_str().unwrap().starts_with(input) {
+                            commands.push(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    commands.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    list_files(commands);
+    return input.to_owned();
+}
+
 fn autocomplete(input: &String) -> String {
-    //println!("\r\nSeg: {}", input);
-    //let last_input = input.trim().split(" ").last().unwrap();
-    let mut file_names: Vec<String> = fs::read_dir(".")
+    let idx = input.rfind("/").unwrap_or(0);
+    let mut search_path = input[..idx].to_owned();
+    search_path.insert_str(0, "./");
+    let input_path = PathBuf::from(input);
+    if input_path.is_dir() {
+        if !input.ends_with("/") {
+            return input.to_owned() + "/";
+        }
+    }
+
+    let mut paths: Vec<PathBuf> = fs::read_dir(search_path)
         .unwrap()
-        .filter_map(|dir| dir.ok())
-        .map(|entry| {
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|entry| {
+            if input_path.is_dir() {
+                return true;
+            }
             entry
-                .path()
-                .strip_prefix("./")
+                .file_name()
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .to_string()
-        })
-        .filter(|file_name| {
-            file_name
-                .to_lowercase()
-                .starts_with(input.to_lowercase().trim())
+                .starts_with(input_path.file_name().unwrap_or_default().to_str().unwrap())
         })
         .collect();
 
-    if input.is_empty() {
-        list_files(file_names);
+    if input.is_empty() || input_path.is_dir() {
+        list_files(paths);
         return input.to_owned();
     }
 
-    if file_names.is_empty() {
+    if paths.is_empty() {
         return input.to_owned();
     }
 
-    file_names.sort_by_key(|path| {
-        return path.len();
+    paths.sort_by_key(|path| {
+        return path.to_str().unwrap().len();
     });
 
-    /* 
-    println!("\r");
-    for f in file_names.to_owned() {
-        println!("{}", f);
-        print!("\r");
-    }*/
+    if let Some(found) = paths.iter().find(|x| &x.to_string_lossy() == input) {
+        if found.is_dir() {
+            return String::from(found.file_name().unwrap().to_str().unwrap()) + "/";
+        } else {
+            return String::from(found.file_name().unwrap().to_str().unwrap()) + " ";
+        }
+    }
 
-    let first = &file_names[0];
-    let mut prefix_len = first.len();
-
-    for s in file_names.iter().skip(1) {
+    let first = &paths[0];
+    let mut prefix_len = first.file_name().unwrap().to_str().unwrap().len();
+    for s in paths.iter().skip(1) {
         prefix_len = first
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
             .chars()
-            .zip(s.chars())
+            .zip(s.file_name().unwrap().to_str().unwrap().chars())
             .take_while(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
             .count()
             .min(prefix_len)
     }
 
-    // println!("{}, {}", input.len(), prefix_len);
-    // println!("common: {}\r", first[..prefix_len].to_string());
-    if prefix_len == input.len() {
-        list_files(file_names);
-        //print!("? {}", &input);
-        //io::stdout().flush().unwrap();
+    if prefix_len == input_path.file_name().unwrap().len() {
+        list_files(paths);
     } else {
-        // println!("\n\rcommon: {}", first[..prefix_len].to_string());
-        //*input = first[..prefix_len].to_string();
-        return first[..prefix_len].to_string();
+        return String::from(
+            first.to_str().unwrap()[2..first.to_str().unwrap().len()
+                - (first.file_name().unwrap().len() - prefix_len)]
+                .to_owned(),
+        );
     }
 
     return input.to_owned();
-    // println!("\rinput: {}", input);
-    // io::stdout().flush().unwrap();
-    //list_files(file_names);
 }
 
-fn list_files(file_names: Vec<String>) {
+fn list_files(paths: Vec<PathBuf>) {
+    let file_names: Vec<&std::ffi::OsStr> = paths.iter().map(|p| p.file_name().unwrap()).collect();
     print!("\r\n");
     io::stdout().flush().unwrap();
-    // Get size in characters of longest file name
     let mut longest_file_name_size = file_names
         .iter()
-        .map(|name| name.chars().count())
+        .map(|name| name.to_str().unwrap().chars().count())
         .max()
         .unwrap_or(0);
-
-    // Add padding
     longest_file_name_size += 5;
-
-    // Get terminal width
-    let (current_cols, current_rows) = termion::terminal_size().unwrap();
-    //println!("Cols: {}, Rows: {}, Longest entry: {}\r", current_cols, current_rows, longest_file_name_size);
-
-    // Get max cols of entries
-    let mut format_cols = current_cols as usize / longest_file_name_size;
-    //println!("Format cols: {}, {}", format_cols, file_names.len());
-    //if format_cols > file_names.len() {
-    //    format_cols = file_names.len();
-    //}
-
-    // Get width of formatted output
-    let _w = (longest_file_name_size + 1) * 2;
-
-    //print!("\n\r");
+    let (current_cols, _current_rows) = termion::terminal_size().unwrap();
+    let format_cols = current_cols as usize / longest_file_name_size;
     let mut printed_cols = 0;
     let mut printed_cols_newline_count = 0;
     if format_cols <= 1 {
         for file_name in &file_names {
-            print!("{}\r\n", file_name);
+            print!("{}\r\n", file_name.to_str().unwrap());
         }
     } else {
         for file_name in &file_names {
-            print!("{}", file_name);
+            print!("{}", file_name.to_str().unwrap());
             print!(
                 "{}",
-                " ".repeat((longest_file_name_size) - file_name.chars().count())
+                " ".repeat((longest_file_name_size) - file_name.to_str().unwrap().chars().count())
             );
 
             printed_cols += 1;
@@ -214,8 +222,6 @@ fn list_files(file_names: Vec<String>) {
             }
         }
     }
-    //print!("\r\n{}", input);
-    //io::stdout().flush().unwrap();
 }
 
 fn parse(input: &str) -> bool {
@@ -226,15 +232,13 @@ fn parse(input: &str) -> bool {
 
     let mut split = input.splitn(2, ' ');
     let command = split.next().unwrap();
-    let args = split.next().unwrap_or("");
+    let args = split.next().unwrap_or("").split_whitespace().map(String::from).collect::<Vec<String>>();
 
-    // println!("Command: '{}', Args: '{}'", command, args);
-
-    launch(command, args);
+    launch(command, &args);
     return true;
 }
 
-fn launch(command: &str, args: &str) {
+fn launch(command: &str, args: &[String]) {
     if builtin(command, args) {
         return;
     }
@@ -265,16 +269,10 @@ fn launch(command: &str, args: &str) {
         return;
     }
 
-    /*if !path.is_file() {
-        println!("'{}' is not a file", command);
-        return;
-    }*/
-
     spawn_tty(command, args);
-    return;
 }
 
-fn builtin(command: &str, args: &str) -> bool {
+fn builtin(command: &str, args: &[String]) -> bool {
     match command {
         "cd" => {
             if args.is_empty() {
@@ -287,8 +285,10 @@ fn builtin(command: &str, args: &str) -> bool {
                     }
                 }
             } else {
-                if let Err(error) = env::set_current_dir(Path::new(args)) {
-                    println!("cd: {}", error);
+                if let Some(arg) = args.first() {
+                    if let Err(error) = env::set_current_dir(Path::new(arg)) {
+                        println!("cd: {}", error);
+                    }
                 }
             }
             return true;
@@ -297,14 +297,11 @@ fn builtin(command: &str, args: &str) -> bool {
     }
 }
 
-fn spawn_tty(command: &str, args: &str) {
-    // Set raw mode
+fn spawn_tty(command: &str, args: &[String]) {
     let _raw = std::io::stdout().into_raw_mode().unwrap();
-    // Set non-blocking stdin
     let stdin_fd = io::stdin().as_raw_fd();
     fcntl(stdin_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK)).unwrap();
 
-    // Pty setup
     let (current_cols, current_rows) = termion::terminal_size().unwrap();
     let pty_system = portable_pty::native_pty_system();
     let pty_size: portable_pty::PtySize = portable_pty::PtySize {
@@ -316,16 +313,14 @@ fn spawn_tty(command: &str, args: &str) {
 
     let pair = pty_system.openpty(pty_size).unwrap();
 
-    // Spawn command
     let mut cmd = portable_pty::CommandBuilder::new(command);
     cmd.cwd(env::current_dir().unwrap());
-    if !args.is_empty() {
-        cmd.arg(args);
+    for arg in args {
+        cmd.arg(arg);
     }
     let child = pair.slave.spawn_command(cmd).unwrap();
     let child = Arc::new(Mutex::new(child));
 
-    // Pty reader thread
     let mut reader = pair.master.try_clone_reader().unwrap();
     let read_handle = thread::spawn(move || {
         let mut buf = [0; 1024];
@@ -381,6 +376,5 @@ fn spawn_tty(command: &str, args: &str) {
     read_handle.join().unwrap();
     child.lock().unwrap().wait().unwrap();
 
-    // Clear non-blocking stdin
     fcntl(stdin_fd, FcntlArg::F_SETFL(OFlag::empty())).unwrap();
 }
